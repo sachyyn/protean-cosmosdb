@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "protean-cosmosdb"
+version = "0.1.0"
+description = "Azure Cosmos DB (NoSQL API) database adapter for the Protean framework"
+requires-python = ">=3.11"
+dependencies = [
+    "protean>=0.16,<0.17",
+    "azure-cosmos>=4.5",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.entry-points."protean.providers"]
+cosmosdb = "protean_cosmosdb.cosmosdb:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/protean_cosmosdb"]
