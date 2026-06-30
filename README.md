@@ -181,10 +181,14 @@ queries go through the SQL path.
 - **`_filter` runs a separate `COUNT` query** to populate the total for
   pagination; callers that pass `with_total=False` skip it to save RUs.
   (`get(id)` bypasses this entirely via the point-read fast path above.)
-- **Bulk `update_all` / `delete_all` loop client-side** (Cosmos has no
-  server-side update-by-query). `_claim`, by contrast, *is* atomic: it uses an
-  etag-conditional replace per row, so a concurrent consumer that loses the
-  race is rejected (412) and skips — no double-claim.
+- **Bulk `update_all` / `delete_all` work, but run as a client-side loop.**
+  They are fully functional and covered by the conformance suite; the caveat
+  is only *how* they run: Cosmos has no server-side `UPDATE … WHERE`, so the
+  adapter reads the matching items and writes each one (N operations) rather
+  than issuing a single statement. Correct, just not a single round-trip.
+  `_claim`, by contrast, *is* atomic: it uses an etag-conditional replace per
+  row, so a concurrent consumer that loses the race is rejected (412) and
+  skips — no double-claim.
 
 ## Test
 
