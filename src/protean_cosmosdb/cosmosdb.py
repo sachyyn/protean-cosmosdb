@@ -31,7 +31,6 @@ from protean.core.queryset import ResultSet
 from protean.exceptions import (
     DatabaseError,
     ExpectedVersionError,
-    NotSupportedError,
     ObjectNotFoundError,
     ValidationError,
 )
@@ -364,11 +363,54 @@ class CosmosDBDAO(BaseDAO):
         result = list(self._container().query_items(query=sql, parameters=params))
         return result[0] if result else 0
 
-    def _raw(self, query: Any, data: Any = None):
-        raise NotSupportedError(
-            f"Provider '{self.provider.name}' ({self.provider.__class__.__name__}) "
-            "does not support raw queries"
+    def _raw(self, query: Any, data: Any = None) -> ResultSet:
+        """Run a raw Cosmos SQL query against this entity's container.
+
+        ``query`` is a Cosmos SQL string; ``data`` is an optional list of
+        parameters in Cosmos's ``[{"name": "@p", "value": ...}]`` form.
+        Returns a ``ResultSet`` of raw items; ``QuerySet.raw()`` turns each
+        into an entity via ``to_entity``, so the query should project full
+        documents (``SELECT * FROM c ...``).
+        """
+        params = data if data is not None else []
+        items = list(self._container().query_items(query=query, parameters=params))
+        return ResultSet(offset=0, limit=len(items), total=len(items), items=items)
+
+    def _claim(self, criteria: Q, claim_fields: dict, limit: int, order_by=None):
+        """Atomically select up to ``limit`` rows, stamp ``claim_fields``, and
+        return them — with no double-claim across concurrent consumers.
+
+        Overrides the portable default (read-then-guarded-``_update_all``,
+        which is not atomic on Cosmos) with an etag-conditional replace per
+        row: if another worker modified the row between our read and write,
+        Cosmos rejects the write (412) and we skip it. This upholds the claim
+        contract — no two callers ever claim the same row.
+        """
+        if limit <= 0:
+            return []
+
+        container = self._container()
+        order = [order_by] if order_by else ()
+        rs = self._filter(
+            criteria, offset=0, limit=limit, order_by=order, with_total=False
         )
+
+        json_fields = _jsonify(dict(claim_fields))
+        claimed = []
+        for item in rs.items:
+            updated = {**item, **json_fields}
+            try:
+                container.replace_item(
+                    item=item["id"],
+                    body=updated,
+                    etag=item["_etag"],
+                    match_condition=MatchConditions.IfNotModified,
+                )
+            except exceptions.CosmosAccessConditionFailedError:
+                # Lost the race — another worker claimed/changed this row. Skip.
+                continue
+            claimed.append(self.database_model_cls.to_entity(updated))
+        return claimed
 
     def has_table(self) -> bool:
         try:
@@ -397,7 +439,9 @@ class CosmosDBProvider(BaseProvider):
 
     @property
     def capabilities(self) -> DatabaseCapabilities:
-        return DatabaseCapabilities.DOCUMENT_STORE
+        # DOCUMENT_STORE + RAW_QUERIES: Cosmos's native query language is SQL,
+        # so raw queries are first-class. No transactions (Cosmos has none).
+        return DatabaseCapabilities.DOCUMENT_STORE | DatabaseCapabilities.RAW_QUERIES
 
     @property
     def client(self) -> CosmosClient:
@@ -485,11 +529,27 @@ class CosmosDBProvider(BaseProvider):
         self._database_model_classes[cache_key] = decorated
         return decorated
 
-    def _raw(self, query: Any, data: Any = None):
-        raise NotSupportedError(
-            f"Provider '{self.name}' ({self.__class__.__name__}) "
-            "does not support raw queries"
-        )
+    def _raw(self, query: Any, data: Any = None) -> list:
+        """Run a raw Cosmos SQL query across every container this provider owns
+        and return the combined raw results.
+
+        Mirrors the memory adapter's provider-level ``_raw`` (which runs across
+        all schemas): a Cosmos SQL query is container-scoped, so a provider-wide
+        raw query is executed against each registered container and the results
+        concatenated. ``data`` is an optional Cosmos parameter list.
+        """
+        params = data if data is not None else []
+        results: list = []
+        db = self._database()
+        for _, model_cls in self._registered_models():
+            container = db.get_container_client(model_cls.derive_schema_name())
+            try:
+                results.extend(
+                    list(container.query_items(query=query, parameters=params))
+                )
+            except exceptions.CosmosResourceNotFoundError:
+                pass
+        return results
 
     # -- lifecycle --------------------------------------------------------
     def _registered_models(self):

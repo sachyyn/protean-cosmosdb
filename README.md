@@ -66,16 +66,16 @@ generic test battery its built-in adapters run), executed against the Linux
 Cosmos emulator:
 
 ```
-133 passed, 19 skipped
+135 passed, 17 skipped
 ```
 
-The 19 skips are the capability-gated tests for features this adapter
-deliberately does not declare (transactions, atomic transactions, raw
-queries, native JSON, native array) — the conformance plugin skips them
-automatically based on the declared `capabilities`. Everything under the
-declared capabilities (CRUD, filtering, ordering, bulk operations, schema
-management, optimistic locking, value objects, associations, complex fields,
-persistence, querysets) passes.
+The 17 skips are the capability-gated tests for features this adapter
+deliberately does not declare (transactions, atomic transactions, native
+JSON, native array) — the conformance plugin skips them automatically based
+on the declared `capabilities`. Everything under the declared capabilities
+(CRUD, filtering, ordering, bulk operations, raw queries, schema management,
+optimistic locking, value objects, associations, complex fields, persistence,
+querysets) passes.
 
 ### Running the conformance suite
 
@@ -115,13 +115,15 @@ Implements the full adapter contract for protean 0.16:
   endswith, gt, gte, lt, lte, in, isnull.
 - **Bulk / batch surface**: `QuerySet.update()` → `_update_all`,
   `QuerySet.delete()` → `_delete_all`, and the outbox primitives
-  `_delete_top` (bounded batch delete) and `_claim` (select-and-stamp) — all
-  exercised in the live suite.
-- **Capabilities** = `DOCUMENT_STORE`: CRUD, FILTER, BULK_OPERATIONS,
-  ORDERING, SCHEMA_MANAGEMENT, OPTIMISTIC_LOCKING.
+  `_delete_top` (bounded batch delete) and `_claim` (atomic select-and-stamp,
+  via etag-conditional replace) — all exercised in the live suite.
+- **Raw queries**: `provider.raw()` and `QuerySet.raw()` run Cosmos SQL
+  (parameterized) and return raw results / entities respectively.
+- **Capabilities** = `DOCUMENT_STORE | RAW_QUERIES`: CRUD, FILTER,
+  BULK_OPERATIONS, ORDERING, SCHEMA_MANAGEMENT, OPTIMISTIC_LOCKING,
+  RAW_QUERIES.
 
-Not yet covered by tests: value objects (flattened to shadow fields by
-`_entity_to_dict`, expected to work) and aggregate associations.
+Covered by the conformance suite: value objects and aggregate associations.
 
 ## Known ceilings
 
@@ -132,12 +134,13 @@ Not yet covered by tests: value objects (flattened to shadow fields by
 - **`_filter` runs a separate `COUNT` query** to populate the total for
   pagination; callers that pass `with_total=False` skip it to save RUs.
 - **Bulk `update_all` / `delete_all` loop client-side** (Cosmos has no
-  server-side update-by-query).
-- **`_claim` is not atomic across concurrent consumers.** The bulk update has
-  no per-row etag guard, so two outbox workers could claim the same row — the
-  same caveat the base contract notes for Elasticsearch. Single-consumer
-  outbox processing is correct; don't run concurrent claimers against Cosmos.
-- **Raw queries not supported** (`RAW_QUERIES` capability not declared).
+  server-side update-by-query). `_claim`, by contrast, *is* atomic: it uses an
+  etag-conditional replace per row, so a concurrent consumer that loses the
+  race is rejected (412) and skips — no double-claim.
+- **No native JSON / array capability declared.** Cosmos stores nested JSON
+  natively, but the adapter doesn't yet declare `NATIVE_JSON` / `NATIVE_ARRAY`
+  (those conformance tests are skipped). List/Dict fields still persist via
+  JSON coercion; the dedicated capability tests just aren't run yet.
 
 ## Test
 

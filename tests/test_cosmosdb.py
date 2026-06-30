@@ -343,8 +343,6 @@ def test_live_bulk_operations():
         assert dao.query.filter(category="bulk").all().total == 3
 
         # _delete_top: bounded delete (used by outbox cleanup) — drains in batches
-        from protean.utils.query import Q as _Q
-
         crit = dao.query.filter(category="bulk")._criteria
         n1 = dao._delete_top(crit, limit=2)
         assert n1 == 2
@@ -352,12 +350,18 @@ def test_live_bulk_operations():
         assert n2 == 1
         assert dao.query.filter(category="bulk").all().total == 0
 
-        # _claim: atomically select + stamp rows (outbox consumer primitive)
+        # _claim: atomically select + stamp rows (outbox consumer primitive).
+        # P3/P4/P5 carry category="hi". Drain them in batches and prove no row
+        # is ever claimed twice (the etag guard's contract).
         claim_crit = dao.query.filter(category="hi")._criteria
-        claimed = dao.outside_uow()._claim(claim_crit, {"category": "claimed"}, limit=2)
-        assert len(claimed) == 2
-        assert all(c.category == "claimed" for c in claimed)
-        assert dao.query.filter(category="claimed").all().total == 2
+        first = dao.outside_uow()._claim(claim_crit, {"category": "claimed"}, limit=2)
+        second = dao.outside_uow()._claim(claim_crit, {"category": "claimed"}, limit=2)
+        assert len(first) == 2 and len(second) == 1
+        assert all(c.category == "claimed" for c in first + second)
+        assert len({c.id for c in first + second}) == 3  # all distinct, no double-claim
+        # Nothing left matching the criteria -> a further claim is empty.
+        assert dao.outside_uow()._claim(claim_crit, {"category": "claimed"}, limit=5) == []
+        assert dao.query.filter(category="claimed").all().total == 3
 
         # delete_all with NO filter -> empty Q tree; must not emit "WHERE ()"
         repo.add(Product(name="leftover", category="z", price=99))
@@ -367,6 +371,42 @@ def test_live_bulk_operations():
 
         provider._data_reset()
     print("ok: live bulk operations (update_all, delete_all, _delete_top, _claim)")
+
+
+def test_live_raw_queries():
+    """RAW_QUERIES capability: provider.raw() and QuerySet.raw() against Cosmos."""
+    domain, Product = _live_domain()
+    if domain is None:
+        print("skip: live test (set COSMOS_ENDPOINT + COSMOS_KEY)")
+        return
+
+    from protean.port.provider import DatabaseCapabilities
+
+    with domain.domain_context():
+        provider = domain.providers["default"]
+        provider._create_database_artifacts()
+        provider._data_reset()
+        repo = domain.repository_for(Product)
+
+        assert provider.has_capability(DatabaseCapabilities.RAW_QUERIES)
+
+        for name, price in [("a", 10), ("b", 20), ("c", 30)]:
+            repo.add(Product(name=name, category="raw", price=price))
+
+        # provider.raw(): runs across containers, returns raw results
+        assert provider.raw("SELECT VALUE COUNT(1) FROM c")[0] == 3
+
+        # QuerySet.raw(): parameterized SQL -> full entities
+        results = repo._dao.query.raw(
+            "SELECT * FROM c WHERE c.price > @min",
+            [{"name": "@min", "value": 15}],
+        )
+        names = sorted(p.name for p in results)
+        assert names == ["b", "c"]
+        assert all(isinstance(p, Product) for p in results)
+
+        provider._data_reset()
+    print("ok: live raw queries (provider.raw + QuerySet.raw)")
 
 
 if __name__ == "__main__":
@@ -380,4 +420,5 @@ if __name__ == "__main__":
     test_live_queries()
     test_live_optimistic_locking()
     test_live_bulk_operations()
+    test_live_raw_queries()
     print("\nAll checks passed.")
