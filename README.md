@@ -1,6 +1,9 @@
 # protean-cosmosdb
 
 [![CI](https://github.com/sachyyn/protean-cosmosdb/actions/workflows/ci.yml/badge.svg)](https://github.com/sachyyn/protean-cosmosdb/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/protean-cosmosdb.svg)](https://pypi.org/project/protean-cosmosdb/)
+[![Python](https://img.shields.io/pypi/pyversions/protean-cosmosdb.svg)](https://pypi.org/project/protean-cosmosdb/)
+[![License: MIT](https://img.shields.io/pypi/l/protean-cosmosdb.svg)](LICENSE)
 
 Azure Cosmos DB (NoSQL / Core API) database adapter for the
 [Protean](https://github.com/proteanhq/protean) framework. Built against
@@ -216,26 +219,16 @@ accepted but not enforced there.
 
 ## Releasing to PyPI
 
-Publishing is automated via **PyPI Trusted Publishing** (OIDC) — no API
-tokens are stored in the repo. The `.github/workflows/release.yml` workflow
-builds and publishes on any `v*` tag.
-
-One-time setup on PyPI (project owner):
-
-1. Create the project on PyPI (or let the first trusted-publishing run create
-   it via a pending publisher).
-2. On PyPI → the project → *Publishing*, add a **GitHub trusted publisher**:
-   - Owner: `sachyyn`, Repository: `protean-cosmosdb`
-   - Workflow: `release.yml`, Environment: `pypi`
-3. In the GitHub repo, create an environment named `pypi` (Settings →
-   Environments) to match.
-
-Then cut a release:
+Publishing is automated via **PyPI Trusted Publishing** (OIDC) — no API tokens
+are stored anywhere. The trusted publisher (repo `sachyyn/protean-cosmosdb`,
+workflow `release.yml`, environment `pypi`) is already configured, so cutting a
+release is just:
 
 ```bash
-# bump `version` in pyproject.toml first, then:
-git tag v0.1.0
-git push origin v0.1.0      # triggers build + publish
+# 1. bump `version` in pyproject.toml, commit
+# 2. tag and push — .github/workflows/release.yml builds and publishes
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 Locally, `python -m build && python -m twine check dist/*` reproduces exactly
