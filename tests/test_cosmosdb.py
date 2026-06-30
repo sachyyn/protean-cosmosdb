@@ -138,6 +138,12 @@ def test_build_filters_composition():
         params = []
         clause = dao._build_filters(~Q(name="Ada"), params)
         assert clause == "NOT (c.name = @p0)"
+
+        # Empty / degenerate Q tree (delete_all/filter with no criteria) must
+        # NOT emit "()" — that produces invalid Cosmos SQL. Regression guard.
+        params = []
+        assert dao._build_filters(Q() & Q(), params) == ""
+        assert params == []
     print("ok: build_filters composition")
 
 
@@ -353,10 +359,11 @@ def test_live_bulk_operations():
         assert all(c.category == "claimed" for c in claimed)
         assert dao.query.filter(category="claimed").all().total == 2
 
-        # delete_all: clear everything matching a filter
-        deleted = dao.query.filter(price__gte=0).delete()
+        # delete_all with NO filter -> empty Q tree; must not emit "WHERE ()"
+        repo.add(Product(name="leftover", category="z", price=99))
+        deleted = dao.query.delete()
         assert deleted >= 1
-        assert dao.query.filter(price__gte=0).all().total == 0
+        assert dao.query.all().total == 0
 
         provider._data_reset()
     print("ok: live bulk operations (update_all, delete_all, _delete_top, _claim)")

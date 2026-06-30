@@ -61,8 +61,50 @@ rather than silently overwritten.
 
 ## Protean compliance
 
-Implements the full adapter contract for protean 0.16, verified against the
-Linux Cosmos emulator:
+Verified against **Protean's official adapter conformance suite** (the same
+generic test battery its built-in adapters run), executed against the Linux
+Cosmos emulator:
+
+```
+133 passed, 19 skipped
+```
+
+The 19 skips are the capability-gated tests for features this adapter
+deliberately does not declare (transactions, atomic transactions, raw
+queries, native JSON, native array) — the conformance plugin skips them
+automatically based on the declared `capabilities`. Everything under the
+declared capabilities (CRUD, filtering, ordering, bulk operations, schema
+management, optimistic locking, value objects, associations, complex fields,
+persistence, querysets) passes.
+
+### Running the conformance suite
+
+The suite ships in Protean's source tree (not the wheel). To run it against
+this adapter:
+
+```bash
+# 1. Protean source at the matching version provides the generic tests
+git clone --branch v0.16.0 https://github.com/proteanhq/protean.git
+GEN="protean/tests/adapters/repository/generic"
+
+# 2. A conftest that loads the official plugin and points it at Cosmos:
+cat > "$GEN/conftest_cosmos.py" <<'PY'
+# (see tests/conformance_conftest.py in this repo)
+PY
+
+# 3. Run with the emulator up:
+export COSMOS_ENDPOINT="http://localhost:8081/" COSMOS_KEY="<emulator-key>"
+pytest "$GEN" -p no:cacheprovider
+```
+
+`tests/conformance_conftest.py` in this repo is the ready-made conftest
+(loads `protean.integrations.pytest.adapter_conformance` and supplies the
+Cosmos `db_config`); copy it next to the generic tests, isolated from
+Protean's in-tree conftests.
+
+### Contract coverage
+
+Implements the full adapter contract for protean 0.16:
 
 - **All 9 DAO abstract methods**: `_filter` (with `with_total` + `only()`
   column projection), `_create`, `_update`, `_update_all`, `_delete`,

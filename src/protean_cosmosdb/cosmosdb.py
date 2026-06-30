@@ -173,7 +173,12 @@ class CosmosDBDAO(BaseDAO):
         parts = []
         for child in criteria.children:
             if isinstance(child, Q):
-                parts.append(f"({self._build_filters(child, params)})")
+                # Skip empty/degenerate sub-groups (e.g. the (AND:(AND:)) tree
+                # produced by delete_all()/filter() with no criteria) so they
+                # don't emit an empty "()" and break the SQL.
+                sub = self._build_filters(child, params)
+                if sub:
+                    parts.append(f"({sub})")
             else:
                 field, lookup_cls = self.provider._extract_lookup(child[0])
                 name = f"@p{len(params)}"
