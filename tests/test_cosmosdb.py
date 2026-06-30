@@ -308,6 +308,60 @@ def test_live_optimistic_locking():
     print("ok: live optimistic locking")
 
 
+def test_live_bulk_operations():
+    """Every bulk path Protean exposes, run against the real engine:
+    QuerySet.update() -> _update_all, QuerySet.delete() -> _delete_all,
+    and the outbox primitives _delete_top and _claim (portable defaults
+    that lean on column projection via QuerySet.only())."""
+    domain, Product = _live_domain()
+    if domain is None:
+        print("skip: live test (set COSMOS_ENDPOINT + COSMOS_KEY)")
+        return
+
+    with domain.domain_context():
+        provider = domain.providers["default"]
+        provider._create_database_artifacts()
+        provider._data_reset()
+        repo = domain.repository_for(Product)
+        dao = repo._dao
+
+        for i in range(6):
+            repo.add(Product(name=f"P{i}", category="bulk", price=i))
+
+        # update_all: bump price for a subset, leave the rest untouched
+        updated = dao.query.filter(price__gte=3).update(category="hi")
+        assert updated == 3
+        assert {p.name for p in dao.query.filter(category="hi").all()} == {
+            "P3", "P4", "P5",
+        }
+        assert dao.query.filter(category="bulk").all().total == 3
+
+        # _delete_top: bounded delete (used by outbox cleanup) — drains in batches
+        from protean.utils.query import Q as _Q
+
+        crit = dao.query.filter(category="bulk")._criteria
+        n1 = dao._delete_top(crit, limit=2)
+        assert n1 == 2
+        n2 = dao._delete_top(crit, limit=10)
+        assert n2 == 1
+        assert dao.query.filter(category="bulk").all().total == 0
+
+        # _claim: atomically select + stamp rows (outbox consumer primitive)
+        claim_crit = dao.query.filter(category="hi")._criteria
+        claimed = dao.outside_uow()._claim(claim_crit, {"category": "claimed"}, limit=2)
+        assert len(claimed) == 2
+        assert all(c.category == "claimed" for c in claimed)
+        assert dao.query.filter(category="claimed").all().total == 2
+
+        # delete_all: clear everything matching a filter
+        deleted = dao.query.filter(price__gte=0).delete()
+        assert deleted >= 1
+        assert dao.query.filter(price__gte=0).all().total == 0
+
+        provider._data_reset()
+    print("ok: live bulk operations (update_all, delete_all, _delete_top, _claim)")
+
+
 if __name__ == "__main__":
     import logging
 
@@ -318,4 +372,5 @@ if __name__ == "__main__":
     test_live_crud_round_trip()
     test_live_queries()
     test_live_optimistic_locking()
+    test_live_bulk_operations()
     print("\nAll checks passed.")

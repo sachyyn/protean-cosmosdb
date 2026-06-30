@@ -106,6 +106,17 @@ class CosmosDBModel(BaseDatabaseModel):
         return part_of(item_dict)
 
     @classmethod
+    def _get_value(cls, item: dict, key: str) -> Any:
+        """Read a single value from a stored item (a dict).
+
+        Overrides the object-based (``getattr``) default so the base
+        ``to_records`` — used by ``QuerySet.only()`` column projection, and
+        in turn by the outbox ``_delete_top`` / ``_claim`` primitives — works
+        against Cosmos's JSON items.
+        """
+        return item.get(key)
+
+    @classmethod
     def _coerce_identity(cls, value: Any) -> Any:
         """Restore a UUID identity that was stored as a string."""
         if (

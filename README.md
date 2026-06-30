@@ -59,6 +59,28 @@ Cosmos system fields.
 via `If-Match`, so a concurrent write is rejected with `ExpectedVersionError`
 rather than silently overwritten.
 
+## Protean compliance
+
+Implements the full adapter contract for protean 0.16, verified against the
+Linux Cosmos emulator:
+
+- **All 9 DAO abstract methods**: `_filter` (with `with_total` + `only()`
+  column projection), `_create`, `_update`, `_update_all`, `_delete`,
+  `_delete_all`, `_count`, `_raw`, `has_table`.
+- **All 12 provider abstract methods** + the `capabilities` property.
+  `validate_lookups()` reports no missing lookups.
+- **All 12 required lookups**: exact, iexact, contains, icontains, startswith,
+  endswith, gt, gte, lt, lte, in, isnull.
+- **Bulk / batch surface**: `QuerySet.update()` → `_update_all`,
+  `QuerySet.delete()` → `_delete_all`, and the outbox primitives
+  `_delete_top` (bounded batch delete) and `_claim` (select-and-stamp) — all
+  exercised in the live suite.
+- **Capabilities** = `DOCUMENT_STORE`: CRUD, FILTER, BULK_OPERATIONS,
+  ORDERING, SCHEMA_MANAGEMENT, OPTIMISTIC_LOCKING.
+
+Not yet covered by tests: value objects (flattened to shadow fields by
+`_entity_to_dict`, expected to work) and aggregate associations.
+
 ## Known ceilings
 
 - **No transactions / rollback.** Cosmos has no cross-document transactions, so
@@ -69,6 +91,10 @@ rather than silently overwritten.
   pagination; callers that pass `with_total=False` skip it to save RUs.
 - **Bulk `update_all` / `delete_all` loop client-side** (Cosmos has no
   server-side update-by-query).
+- **`_claim` is not atomic across concurrent consumers.** The bulk update has
+  no per-row etag guard, so two outbox workers could claim the same row — the
+  same caveat the base contract notes for Elasticsearch. Single-consumer
+  outbox processing is correct; don't run concurrent claimers against Cosmos.
 - **Raw queries not supported** (`RAW_QUERIES` capability not declared).
 
 ## Test
