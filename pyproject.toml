@@ -6,7 +6,23 @@ build-backend = "hatchling.build"
 name = "protean-cosmosdb"
 version = "0.1.0"
 description = "Azure Cosmos DB (NoSQL API) database adapter for the Protean framework"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Sachin", email = "sachin@team8solutions.com" }]
+keywords = ["protean", "cosmosdb", "azure", "ddd", "cqrs", "nosql", "repository"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "protean>=0.16,<0.17",
     "azure-cosmos>=4.5",
@@ -15,8 +31,16 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest"]
 
+[project.urls]
+Homepage = "https://github.com/sachyyn/protean-cosmosdb"
+Repository = "https://github.com/sachyyn/protean-cosmosdb"
+Issues = "https://github.com/sachyyn/protean-cosmosdb/issues"
+
 [project.entry-points."protean.providers"]
 cosmosdb = "protean_cosmosdb.cosmosdb:register"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/protean_cosmosdb"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE"]

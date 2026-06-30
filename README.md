@@ -31,6 +31,38 @@ throughput   = 400         # optional RU/s for created containers
 domain.providers["default"]._create_database_artifacts()  # create db + containers
 ```
 
+## Quickstart
+
+After `pip install protean-cosmosdb`, no registration code is needed — the
+provider is discovered automatically. Just name it in config and use the
+repository:
+
+```python
+from protean.domain import Domain
+from protean.fields import String
+
+domain = Domain(name="MyApp")
+domain.config["databases"]["default"] = {
+    "provider": "cosmosdb",                      # auto-discovered, no import needed
+    "database_uri": "https://<account>.documents.azure.com:443/",
+    "key": "<primary-key>",
+    "database": "myapp",
+}
+
+@domain.aggregate
+class Note:
+    text = String(max_length=100)
+
+domain.init(traverse=False)
+with domain.domain_context():
+    domain.providers["default"]._create_database_artifacts()   # one-time setup
+    repo = domain.repository_for(Note)
+
+    note = Note(text="hello")
+    repo.add(note)
+    assert repo.get(note.id).text == "hello"     # point read
+```
+
 ## Design
 
 | Component | Maps to |
@@ -181,3 +213,30 @@ The emulator defaults to HTTP, which the Python SDK supports directly (only
 the .NET/Java SDKs require HTTPS + certificate install). Note the emulator
 treats Request Units / throughput as a no-op, so `offer_throughput` is
 accepted but not enforced there.
+
+## Releasing to PyPI
+
+Publishing is automated via **PyPI Trusted Publishing** (OIDC) — no API
+tokens are stored in the repo. The `.github/workflows/release.yml` workflow
+builds and publishes on any `v*` tag.
+
+One-time setup on PyPI (project owner):
+
+1. Create the project on PyPI (or let the first trusted-publishing run create
+   it via a pending publisher).
+2. On PyPI → the project → *Publishing*, add a **GitHub trusted publisher**:
+   - Owner: `sachyyn`, Repository: `protean-cosmosdb`
+   - Workflow: `release.yml`, Environment: `pypi`
+3. In the GitHub repo, create an environment named `pypi` (Settings →
+   Environments) to match.
+
+Then cut a release:
+
+```bash
+# bump `version` in pyproject.toml first, then:
+git tag v0.1.0
+git push origin v0.1.0      # triggers build + publish
+```
+
+Locally, `python -m build && python -m twine check dist/*` reproduces exactly
+what CI builds and validates before upload.
