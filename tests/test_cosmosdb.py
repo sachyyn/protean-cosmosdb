@@ -391,6 +391,44 @@ def test_live_bulk_operations():
     print("ok: live bulk operations (update_all, delete_all, _delete_top, _claim)")
 
 
+def test_live_bulk_update_many_fields():
+    """update_all setting >10 fields must persist all of them. Cosmos caps
+    patch at 10 ops/request, so the adapter chunks — guard against off-by-one."""
+    endpoint, key = os.getenv("COSMOS_ENDPOINT"), os.getenv("COSMOS_KEY")
+    if not (endpoint and key):
+        print("skip: live test (set COSMOS_ENDPOINT + COSMOS_KEY)")
+        return
+
+    register()
+    domain = Domain(name="Wide")
+    domain.config["databases"]["default"] = {
+        "provider": "cosmosdb",
+        "database_uri": endpoint,
+        "key": key,
+        "database": "protean_test",
+    }
+    # 12 fields > the 10-op patch limit -> exercises chunking.
+    Wide = domain.aggregate(
+        type("Wide", (), {f"f{i}": String(max_length=10) for i in range(12)})
+    )
+    domain.init(traverse=False)
+
+    with domain.domain_context():
+        provider = domain.providers["default"]
+        provider._create_database_artifacts()
+        provider._data_reset()
+        repo = domain.repository_for(Wide)
+        repo.add(Wide())
+
+        n = repo._dao.query.update(**{f"f{i}": str(i) for i in range(12)})
+        assert n == 1
+
+        got = repo._dao.query.all().first
+        assert all(getattr(got, f"f{i}") == str(i) for i in range(12))
+        provider._data_reset()
+    print("ok: live bulk update with >10 fields (patch chunking)")
+
+
 def test_live_raw_queries():
     """RAW_QUERIES capability: provider.raw() and QuerySet.raw() against Cosmos."""
     domain, Product = _live_domain()
@@ -439,5 +477,6 @@ if __name__ == "__main__":
     test_live_queries()
     test_live_optimistic_locking()
     test_live_bulk_operations()
+    test_live_bulk_update_many_fields()
     test_live_raw_queries()
     print("\nAll checks passed.")

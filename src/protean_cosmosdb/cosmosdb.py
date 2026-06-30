@@ -17,6 +17,7 @@ Design decisions (see README):
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -367,10 +368,55 @@ class CosmosDBDAO(BaseDAO):
             )
         return model_obj
 
+    def _matched_keys(self, criteria: Q) -> list:
+        """Return ``(id, partition_key_value)`` pairs for items matching
+        ``criteria``, projecting only the keys (not full documents)."""
+        pk = self.database_model_cls._partition_key
+        params: list = []
+        where = self._where(criteria, params)
+        projection = "c.id" if pk == "id" else f"c.id, c.{pk}"
+        sql = f"SELECT {projection} FROM c{where}"
+        return [
+            (item["id"], item.get(pk, item["id"]))
+            for item in self._container().query_items(query=sql, parameters=params)
+        ]
+
+    def _bulk_execute(self, keys: list, op) -> int:
+        """Run ``op((id, pk))`` for each key concurrently and return the count
+        that succeeded.
+
+        Cosmos NoSQL has no server-side update-/delete-by-query (its SQL is
+        read-only), so a write per matched item is unavoidable. We remove the
+        *sequential* latency by fanning the writes out over a bounded thread
+        pool sharing the container client — the same pattern the SDK uses
+        internally (see ``_read_items_helper``). Wall-clock is therefore
+        O(matched / concurrency), not O(matched).
+
+        Items already gone (a concurrent delete won the race) are skipped, not
+        counted; any other Cosmos error fails the operation.
+        """
+        if not keys:
+            return 0
+
+        count, errors = 0, []
+        with ThreadPoolExecutor(max_workers=self.provider._bulk_concurrency) as pool:
+            futures = [pool.submit(op, key) for key in keys]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                    count += 1
+                except exceptions.CosmosResourceNotFoundError:
+                    pass  # concurrently removed — not an error for a bulk op
+                except exceptions.CosmosHttpResponseError as exc:
+                    errors.append(exc)
+        if errors:
+            raise DatabaseError(
+                f"Bulk operation failed for {len(errors)} item(s): {errors[0]}",
+                original_exception=errors[0],
+            )
+        return count
+
     def _update_all(self, criteria: Q, *args, **kwargs):
-        # Cosmos has no server-side update-by-query; read, merge, replace.
-        # ponytail: client-side loop, O(matched) round-trips. Fine for the
-        # outbox/projection-rebuild paths this method serves.
         values: dict[str, Any] = {}
         if args:
             values.update(args[0])
@@ -378,27 +424,32 @@ class CosmosDBDAO(BaseDAO):
         if not values:
             return 0
 
+        # Partial server-side update of just the changed fields (no full-doc
+        # read or rewrite), fanned out concurrently across matched items.
+        patch_ops = [
+            {"op": "set", "path": f"/{field}", "value": value}
+            for field, value in _jsonify(values).items()
+        ]
+        # Azure Cosmos allows at most 10 patch operations per request, so split
+        # into chunks (a single chunk for the common 1-few-field update).
+        chunks = [patch_ops[i : i + 10] for i in range(0, len(patch_ops), 10)]
         container = self._container()
-        params: list = []
-        sql = f"SELECT * FROM c{self._where(criteria, params)}"
 
-        count = 0
-        for item in container.query_items(query=sql, parameters=params):
-            item.update(_jsonify(values))
-            container.replace_item(item=item["id"], body=item)
-            count += 1
-        return count
+        def op(key):
+            for chunk in chunks:
+                container.patch_item(
+                    item=key[0], partition_key=key[1], patch_operations=chunk
+                )
+
+        return self._bulk_execute(self._matched_keys(criteria), op)
 
     def _delete_all(self, criteria: Q = None):
         container = self._container()
-        params: list = []
-        sql = f"SELECT * FROM c{self._where(criteria, params)}"
 
-        count = 0
-        for item in container.query_items(query=sql, parameters=params):
-            container.delete_item(item=item["id"], partition_key=self._pk_value(item))
-            count += 1
-        return count
+        def op(key):
+            container.delete_item(item=key[0], partition_key=key[1])
+
+        return self._bulk_execute(self._matched_keys(criteria), op)
 
     def _count(self, criteria: Q) -> int:
         params: list = []
@@ -478,6 +529,8 @@ class CosmosDBProvider(BaseProvider):
         self._client = None
         self._database_name = conn_info.get("database", "protean")
         self._throughput = conn_info.get("throughput", 400)
+        # Max concurrent writes for bulk update_all / delete_all (I/O-bound).
+        self._bulk_concurrency = conn_info.get("bulk_concurrency", 32)
         self._database_model_classes: dict[str, type] = {}
 
     @property

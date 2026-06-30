@@ -23,11 +23,12 @@ available under the name `cosmosdb` once installed.
 ```toml
 # domain.toml
 [databases.default]
-provider     = "cosmosdb"
-database_uri = "https://<account>.documents.azure.com:443/"
-key          = "<primary-key>"
-database     = "myapp"     # optional, default "protean"
-throughput   = 400         # optional RU/s for created containers
+provider         = "cosmosdb"
+database_uri     = "https://<account>.documents.azure.com:443/"
+key              = "<primary-key>"
+database         = "myapp"   # optional, default "protean"
+throughput       = 400       # optional RU/s for created containers
+bulk_concurrency = 32        # optional, max parallel writes for bulk ops
 ```
 
 ```python
@@ -181,14 +182,17 @@ queries go through the SQL path.
 - **`_filter` runs a separate `COUNT` query** to populate the total for
   pagination; callers that pass `with_total=False` skip it to save RUs.
   (`get(id)` bypasses this entirely via the point-read fast path above.)
-- **Bulk `update_all` / `delete_all` work, but run as a client-side loop.**
-  They are fully functional and covered by the conformance suite; the caveat
-  is only *how* they run: Cosmos has no server-side `UPDATE … WHERE`, so the
-  adapter reads the matching items and writes each one (N operations) rather
-  than issuing a single statement. Correct, just not a single round-trip.
-  `_claim`, by contrast, *is* atomic: it uses an etag-conditional replace per
+- **Bulk `update_all` / `delete_all` issue one write per matched item.**
+  Cosmos NoSQL has no server-side `UPDATE … WHERE` (its SQL is read-only), so
+  a write per matched item is unavoidable on *any* Cosmos adapter. The adapter
+  minimizes the cost: `update_all` uses **server-side `patch_item`** (only the
+  changed fields, no full-doc read/rewrite), and both operations **fan the
+  writes out concurrently** over a bounded thread pool (the same pattern the
+  SDK uses internally), so wall-clock is `O(matched / concurrency)`, not
+  sequential. Tune the pool with `bulk_concurrency` in the provider config
+  (default 32). `_claim` is additionally atomic — etag-conditional replace per
   row, so a concurrent consumer that loses the race is rejected (412) and
-  skips — no double-claim.
+  skips (no double-claim).
 
 ## Test
 
