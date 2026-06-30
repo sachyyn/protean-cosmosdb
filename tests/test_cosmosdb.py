@@ -147,6 +147,24 @@ def test_build_filters_composition():
     print("ok: build_filters composition")
 
 
+def test_point_read_detection():
+    """Only a sole exact `id == value` filter qualifies for the point-read
+    fast path; everything else must fall back to the query path."""
+    domain, Person = _domain()
+    with domain.domain_context():
+        dao, _ = _dao(domain, Person)
+
+        # Qualifies -> returns the identifier
+        assert dao._point_read_identifier(Q(id="abc")) == "abc"
+
+        # Does NOT qualify -> None (falls back to query)
+        assert dao._point_read_identifier(Q(name="Ada")) is None       # not id
+        assert dao._point_read_identifier(Q(id__gt=1)) is None          # not exact
+        assert dao._point_read_identifier(Q(id="a") & Q(name="b")) is None  # compound
+        assert dao._point_read_identifier(~Q(id="a")) is None           # negated
+    print("ok: point-read detection")
+
+
 # --- Live integration (opt-in) ---------------------------------------------
 def _live_domain():
     """A domain wired to a real Cosmos endpoint, or None if not configured."""
@@ -416,6 +434,7 @@ if __name__ == "__main__":
     test_model_round_trip()
     test_lookups_to_sql()
     test_build_filters_composition()
+    test_point_read_detection()
     test_live_crud_round_trip()
     test_live_queries()
     test_live_optimistic_locking()

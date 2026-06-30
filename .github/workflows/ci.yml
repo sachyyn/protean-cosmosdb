@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PROTEAN_VERSION: v0.16.0
+  COSMOS_ENDPOINT: http://localhost:8081/
+  # Well-known Cosmos emulator key (public, not a secret).
+  COSMOS_KEY: C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Start Cosmos DB Linux emulator (NoSQL, HTTP)
+        run: |
+          docker run --detach --name cosmos-emu \
+            --publish 8081:8081 --publish 8080:8080 \
+            mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+
+      - name: Wait for emulator readiness
+        run: |
+          for i in $(seq 1 60); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ready)" = "200" ]; then
+              echo "emulator ready after $((i*3))s"; exit 0
+            fi
+            sleep 3
+          done
+          echo "emulator did not become ready"; docker logs cosmos-emu; exit 1
+
+      - name: Install adapter and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # sqlalchemy: the conformance lookup-registration test imports SAProvider
+          pip install -e '.[test]' sqlalchemy
+
+      - name: Run adapter test suite
+        run: pytest tests/ -q
+
+      - name: Run Protean official conformance suite
+        run: |
+          # The generic conformance tests ship only in Protean's source tree.
+          git clone --depth 1 --branch "$PROTEAN_VERSION" \
+            https://github.com/proteanhq/protean.git /tmp/protean-src
+          # Run them isolated from Protean's in-tree conftests (which hardcode
+          # known providers); our conftest loads the official conformance plugin
+          # and supplies the Cosmos db_config.
+          mkdir -p /tmp/conformance
+          cp /tmp/protean-src/tests/adapters/repository/generic/test_*.py /tmp/conformance/
+          cp tests/conformance_conftest.py /tmp/conformance/conftest.py
+          pytest /tmp/conformance -p no:cacheprovider -q
+
+      - name: Stop emulator
+        if: always()
+        run: docker rm -f cosmos-emu

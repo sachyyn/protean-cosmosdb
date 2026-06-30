@@ -197,6 +197,32 @@ class CosmosDBDAO(BaseDAO):
             return f" WHERE {clause}" if clause else ""
         return ""
 
+    def _point_read_identifier(self, criteria: Q):
+        """Return the identifier when ``criteria`` is exactly ``<id> == value``
+        on an id-partitioned container, so the lookup can be served by a point
+        read instead of a (cross-partition) query. Otherwise ``None``.
+
+        A point read (``read_item`` by id + partition key) is the cheapest and
+        canonical Cosmos read — ~1 RU — and ``repository.get(id)`` funnels
+        through here as a sole id-equality filter. The fast path applies only
+        when the partition key *is* the document id, so the id value alone
+        fully locates the item; any other shape falls back to the query path.
+        """
+        if self.database_model_cls._partition_key != "id":
+            return None
+        if criteria.negated or len(criteria.children) != 1:
+            return None
+        child = criteria.children[0]
+        if isinstance(child, Q):
+            return None
+        field, lookup_cls = self.provider._extract_lookup(child[0])
+        if lookup_cls.lookup_name != "exact":
+            return None
+        id_f = id_field(self.entity_cls)
+        if id_f is None or field != id_f.field_name:
+            return None
+        return child[1]
+
     # -- abstract methods -------------------------------------------------
     def _filter(
         self,
@@ -208,6 +234,23 @@ class CosmosDBDAO(BaseDAO):
         fields: list | None = None,
     ) -> ResultSet:
         container = self._container()
+
+        # Fast path: a sole `id == value` lookup on an id-partitioned container
+        # is a point read (cheapest Cosmos op), avoiding a cross-partition query
+        # plus a separate COUNT. Semantically identical: 0 or 1 matching item.
+        if offset == 0:
+            identifier = self._point_read_identifier(criteria)
+            if identifier is not None:
+                key = str(identifier)
+                try:
+                    item = container.read_item(item=key, partition_key=key)
+                    items = [item]
+                except exceptions.CosmosResourceNotFoundError:
+                    items = []
+                return ResultSet(
+                    offset=0, limit=limit, total=len(items), items=items
+                )
+
         params: list = []
         where = self._where(criteria, params)
 
@@ -439,9 +482,16 @@ class CosmosDBProvider(BaseProvider):
 
     @property
     def capabilities(self) -> DatabaseCapabilities:
-        # DOCUMENT_STORE + RAW_QUERIES: Cosmos's native query language is SQL,
-        # so raw queries are first-class. No transactions (Cosmos has none).
-        return DatabaseCapabilities.DOCUMENT_STORE | DatabaseCapabilities.RAW_QUERIES
+        # DOCUMENT_STORE + RAW_QUERIES + native JSON/array: Cosmos items are
+        # JSON, so nested dicts and lists persist natively; its query language
+        # is SQL, so raw queries are first-class. No transactions (Cosmos has
+        # none across documents).
+        return (
+            DatabaseCapabilities.DOCUMENT_STORE
+            | DatabaseCapabilities.RAW_QUERIES
+            | DatabaseCapabilities.NATIVE_JSON
+            | DatabaseCapabilities.NATIVE_ARRAY
+        )
 
     @property
     def client(self) -> CosmosClient:

@@ -1,5 +1,7 @@
 # protean-cosmosdb
 
+[![CI](https://github.com/sachyyn/protean-cosmosdb/actions/workflows/ci.yml/badge.svg)](https://github.com/sachyyn/protean-cosmosdb/actions/workflows/ci.yml)
+
 Azure Cosmos DB (NoSQL / Core API) database adapter for the
 [Protean](https://github.com/proteanhq/protean) framework. Built against
 Protean 0.16 and `azure-cosmos` 4.x.
@@ -66,16 +68,17 @@ generic test battery its built-in adapters run), executed against the Linux
 Cosmos emulator:
 
 ```
-135 passed, 17 skipped
+147 passed, 5 skipped
 ```
 
-The 17 skips are the capability-gated tests for features this adapter
-deliberately does not declare (transactions, atomic transactions, native
-JSON, native array) — the conformance plugin skips them automatically based
-on the declared `capabilities`. Everything under the declared capabilities
-(CRUD, filtering, ordering, bulk operations, raw queries, schema management,
-optimistic locking, value objects, associations, complex fields, persistence,
-querysets) passes.
+The only 5 skips are the transaction tests (`transactions`,
+`atomic_transactions`) — genuinely impossible on Cosmos, which has no
+cross-document transactions, so the capability isn't declared and the plugin
+skips them. Everything else passes: CRUD, filtering, ordering, bulk
+operations, raw queries, schema management, optimistic locking, value
+objects, associations, complex fields, persistence, querysets, and native
+JSON / array storage. This same suite runs in CI on every push (see
+`.github/workflows/ci.yml`), with the Cosmos emulator as a service.
 
 ### Running the conformance suite
 
@@ -119,11 +122,20 @@ Implements the full adapter contract for protean 0.16:
   via etag-conditional replace) — all exercised in the live suite.
 - **Raw queries**: `provider.raw()` and `QuerySet.raw()` run Cosmos SQL
   (parameterized) and return raw results / entities respectively.
-- **Capabilities** = `DOCUMENT_STORE | RAW_QUERIES`: CRUD, FILTER,
-  BULK_OPERATIONS, ORDERING, SCHEMA_MANAGEMENT, OPTIMISTIC_LOCKING,
-  RAW_QUERIES.
+- **Capabilities** = `DOCUMENT_STORE | RAW_QUERIES | NATIVE_JSON |
+  NATIVE_ARRAY`: CRUD, FILTER, BULK_OPERATIONS, ORDERING, SCHEMA_MANAGEMENT,
+  OPTIMISTIC_LOCKING, RAW_QUERIES, NATIVE_JSON, NATIVE_ARRAY.
 
-Covered by the conformance suite: value objects and aggregate associations.
+Covered by the conformance suite: value objects, aggregate associations, and
+native nested JSON / array fields.
+
+### Performance
+
+`repository.get(id)` is served by a Cosmos **point read** (`read_item` by id +
+partition key) — the cheapest operation (~1 RU) — rather than a
+cross-partition query. `_filter` detects a sole `id == value` lookup on an
+id-partitioned container and takes this fast path automatically; all other
+queries go through the SQL path.
 
 ## Known ceilings
 
@@ -133,14 +145,11 @@ Covered by the conformance suite: value objects and aggregate associations.
   Elasticsearch adapter.
 - **`_filter` runs a separate `COUNT` query** to populate the total for
   pagination; callers that pass `with_total=False` skip it to save RUs.
+  (`get(id)` bypasses this entirely via the point-read fast path above.)
 - **Bulk `update_all` / `delete_all` loop client-side** (Cosmos has no
   server-side update-by-query). `_claim`, by contrast, *is* atomic: it uses an
   etag-conditional replace per row, so a concurrent consumer that loses the
   race is rejected (412) and skips — no double-claim.
-- **No native JSON / array capability declared.** Cosmos stores nested JSON
-  natively, but the adapter doesn't yet declare `NATIVE_JSON` / `NATIVE_ARRAY`
-  (those conformance tests are skipped). List/Dict fields still persist via
-  JSON coercion; the dedicated capability tests just aren't run yet.
 
 ## Test
 
