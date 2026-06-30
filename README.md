@@ -76,7 +76,28 @@ rather than silently overwritten.
 ```bash
 pytest tests/                       # pure logic, no Cosmos needed
 python tests/test_cosmosdb.py       # same checks, plain CLI
-
-# opt-in end-to-end against a real account or the emulator:
-COSMOS_ENDPOINT=... COSMOS_KEY=... pytest tests/test_cosmosdb.py -k live
 ```
+
+The live suite (`test_live_*`) is opt-in and runs the full CRUD + every
+lookup + ordering + pagination + optimistic-locking path against a real
+endpoint. It auto-skips unless `COSMOS_ENDPOINT` and `COSMOS_KEY` are set.
+
+Verified against the Linux Cosmos emulator (NoSQL API, gateway mode):
+
+```bash
+docker run --detach --name cosmos-emu \
+  -p 8081:8081 -p 8080:8080 -p 1234:1234 \
+  mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+
+# wait for readiness, then run:
+curl -s http://localhost:8080/ready          # 200 when ready
+
+export COSMOS_ENDPOINT="http://localhost:8081/"
+export COSMOS_KEY="C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
+pytest tests/ -q
+```
+
+The emulator defaults to HTTP, which the Python SDK supports directly (only
+the .NET/Java SDKs require HTTPS + certificate install). Note the emulator
+treats Request Units / throughput as a no-op, so `offer_throughput` is
+accepted but not enforced there.
